@@ -86,7 +86,7 @@ def main(
         raise typer.Exit(code=0)
 
     if history:
-        run_history(buffer_override=buffer, player_override=player)
+        run_history(buffer_override=buffer, player_override=player, verbose=verbose)
         raise typer.Exit(code=0)
 
     if not args:
@@ -123,6 +123,7 @@ def main(
             is_series=series,
             buffer_override=buffer,
             player_override=player,
+            verbose=verbose,
         )
     except KeyboardInterrupt:
         status("\ncleaning up...")

@@ -11,8 +11,8 @@ import time
 from typing import Any
 import uuid
 from tream.core.config import is_termux, load_config
-from tream.utils.cache import buffer_to_vlc_caching_ms
-from tream.utils.logging import get_logger, status
+from tream.utils.cache import buffer_to_vlc_caching_ms, format_bytes
+from tream.utils.logging import get_console, get_logger, status
 
 PLAYER_CANDIDATES = ["mpv", "vlc"]
 
@@ -23,16 +23,13 @@ def detect_player(preference: str | None = None) -> str:
         p_clean = preference.strip().lower()
         if shutil.which(p_clean) or (sys.platform == "win32" and shutil.which(f"{p_clean}.exe")):
             return p_clean
-        # Check direct path if user supplied full binary path
         if Path(preference).is_file():
             return preference
 
-    # Auto-detect mpv first, then vlc
     for p in PLAYER_CANDIDATES:
         if shutil.which(p) or (sys.platform == "win32" and shutil.which(f"{p}.exe")):
             return p
 
-    # Android / Termux checks
     if is_termux():
         for termux_cmd in ["mpv", "termux-open-url"]:
             if shutil.which(termux_cmd):
@@ -44,10 +41,32 @@ def detect_player(preference: str | None = None) -> str:
 
 
 class MPVIPCClient:
-    """Minimal JSON IPC client for MPV across Unix domain sockets and Windows named pipes."""
+    """Persistent JSON IPC client for MPV across Unix domain sockets and Windows named pipes."""
 
     def __init__(self, ipc_path: str) -> None:
         self.ipc_path = ipc_path
+        self._sock: socket.socket | None = None
+
+    def connect(self) -> bool:
+        if sys.platform == "win32":
+            return True
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(0.8)
+            sock.connect(self.ipc_path)
+            self._sock = sock
+            return True
+        except Exception:
+            self._sock = None
+            return False
+
+    def close(self) -> None:
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
 
     def get_time_pos(self) -> float | None:
         """Query MPV for current playback position in seconds."""
@@ -55,7 +74,6 @@ class MPVIPCClient:
 
         if sys.platform == "win32":
             try:
-                # Windows named pipe access
                 with open(self.ipc_path, "r+b", buffering=0) as pipe:
                     pipe.write(cmd.encode("utf-8"))
                     line = pipe.readline().decode("utf-8")
@@ -65,18 +83,18 @@ class MPVIPCClient:
             except Exception:
                 return None
         else:
+            if not self._sock and not self.connect():
+                return None
             try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(0.5)
-                sock.connect(self.ipc_path)
-                sock.sendall(cmd.encode("utf-8"))
+                assert self._sock is not None
+                self._sock.sendall(cmd.encode("utf-8"))
                 response = b""
-                while b"\n" not in response:
-                    chunk = sock.recv(1024)
+                start_recv = time.monotonic()
+                while b"\n" not in response and (time.monotonic() - start_recv < 0.5):
+                    chunk = self._sock.recv(1024)
                     if not chunk:
                         break
                     response += chunk
-                sock.close()
                 for line in response.decode("utf-8", errors="ignore").splitlines():
                     try:
                         data = json.loads(line)
@@ -85,6 +103,7 @@ class MPVIPCClient:
                     except Exception:
                         pass
             except Exception:
+                self.close()
                 return None
 
         return None
@@ -100,12 +119,14 @@ class PlayerRunner:
         title: str = "",
         resume_seconds: float = 0.0,
         subtitle_file: Path | None = None,
+        verbose: bool = False,
     ) -> None:
         self.player_binary = player_binary
         self.buffer_bytes = buffer_bytes
         self.title = title
         self.resume_seconds = max(0.0, resume_seconds)
         self.subtitle_file = subtitle_file
+        self.verbose = verbose
         self.last_position = self.resume_seconds
         self.logger = get_logger()
 
@@ -118,7 +139,6 @@ class PlayerRunner:
         elif "vlc" in player_name:
             return self._play_vlc(stream_url, is_playlist)
         else:
-            # Fallback player invocation
             cmd = [self.player_binary, stream_url]
             proc = subprocess.Popen(cmd)
             proc.wait()
@@ -139,7 +159,16 @@ class PlayerRunner:
             f"--demuxer-max-back-bytes={self.buffer_bytes}",
             f"--stream-buffer-size={self.buffer_bytes}",
             f"--input-ipc-server={ipc_target}",
+            "--msg-level=ipc=no",
         ]
+
+        if not self.verbose:
+            # Hide noisy configuration warnings, tone-mapping errors, and profile notices
+            cmd.extend([
+                "--msg-level=all=no",
+                "--really-quiet",
+                "--terminal=no",
+            ])
 
         if self.title:
             cmd.append(f"--title=tream - {self.title}")
@@ -156,13 +185,23 @@ class PlayerRunner:
             cmd.append(stream_url)
 
         self.logger.debug("Launching MPV: %s", " ".join(cmd))
-        proc = subprocess.Popen(cmd)
+
+        # Show clean status to the user
+        console = get_console()
+        console.print(f"[bold green]Playing:[/bold green] {self.title or 'Stream'}")
+        console.print(f"[dim]Controls: [Space] Pause | [9/0] Volume | [Left/Right] Seek 5s | [q] Quit[/dim]\n")
+
+        creation_kwargs: dict[str, Any] = {}
+        if not self.verbose:
+            creation_kwargs["stdout"] = subprocess.DEVNULL
+            creation_kwargs["stderr"] = subprocess.DEVNULL
+
+        proc = subprocess.Popen(cmd, **creation_kwargs)
 
         ipc_client = MPVIPCClient(ipc_target)
         stop_polling = threading.Event()
 
         def _poll_position() -> None:
-            # Wait for socket to be created
             time.sleep(1.0)
             while not stop_polling.is_set():
                 pos = ipc_client.get_time_pos()
@@ -183,12 +222,11 @@ class PlayerRunner:
                 proc.kill()
         finally:
             stop_polling.set()
-            # Final attempt to query position before tearing down
             final_pos = ipc_client.get_time_pos()
             if final_pos is not None and final_pos > 0:
                 self.last_position = final_pos
+            ipc_client.close()
 
-            # Cleanup Unix socket file if needed
             if sys.platform != "win32":
                 try:
                     Path(ipc_target).unlink(missing_ok=True)
@@ -200,7 +238,6 @@ class PlayerRunner:
     def _play_vlc(self, stream_url: str, is_playlist: bool) -> float:
         caching_ms = buffer_to_vlc_caching_ms(self.buffer_bytes)
 
-        # VLC handles playlists reliably via .m3u files on disk
         temp_m3u: Path | None = None
         target_path = stream_url
 
@@ -220,6 +257,9 @@ class PlayerRunner:
             f"--sout-mux-caching={caching_ms}",
         ]
 
+        if not self.verbose:
+            cmd.extend(["--quiet"])
+
         if self.resume_seconds > 0:
             cmd.append(f"--start-time={int(self.resume_seconds)}")
 
@@ -229,7 +269,17 @@ class PlayerRunner:
         cmd.append(target_path)
 
         self.logger.debug("Launching VLC: %s", " ".join(cmd))
-        proc = subprocess.Popen(cmd)
+
+        console = get_console()
+        console.print(f"[bold green]Playing:[/bold green] {self.title or 'Stream'}")
+        console.print(f"[dim]Controls: [Space] Pause | [q] Quit[/dim]\n")
+
+        creation_kwargs: dict[str, Any] = {}
+        if not self.verbose:
+            creation_kwargs["stdout"] = subprocess.DEVNULL
+            creation_kwargs["stderr"] = subprocess.DEVNULL
+
+        proc = subprocess.Popen(cmd, **creation_kwargs)
 
         try:
             proc.wait()
@@ -246,5 +296,4 @@ class PlayerRunner:
                 except Exception:
                     pass
 
-        # VLC position without RC socket is approximated
         return self.last_position

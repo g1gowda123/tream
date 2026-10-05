@@ -74,7 +74,11 @@ def add_history_entry(
         pass
 
 
-def run_history(buffer_override: str | None = None, player_override: str | None = None) -> None:
+def run_history(
+    buffer_override: str | None = None,
+    player_override: str | None = None,
+    verbose: bool = False,
+) -> None:
     """Present watch history picker and re-stream selected item."""
     history = load_history()
     if not history:
@@ -112,4 +116,9 @@ def run_history(buffer_override: str | None = None, player_override: str | None 
         return
 
     from tream.commands.watch import resume_from_history
-    resume_from_history(selected, buffer_override=buffer_override, player_override=player_override)
+    resume_from_history(
+        selected,
+        buffer_override=buffer_override,
+        player_override=player_override,
+        verbose=verbose,
+    )

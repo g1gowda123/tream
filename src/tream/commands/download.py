@@ -19,19 +19,7 @@ from tream.core.torrserver import TorrServerClient, find_torrserver_binary, spaw
 from tream.providers.base import SearchResult
 from tream.utils.cache import format_bytes, parse_buffer_size
 from tream.utils.logging import get_console, get_logger, spinner, status
-
-
-def _pick_search_result(results: list[SearchResult]) -> SearchResult | None:
-    choices: list[questionary.Choice] = []
-    for r in results:
-        label = f"[{r.provider}] {r.title} | {r.formatted_size} | S:{r.seeders} L:{r.leechers} [{r.quality}]"
-        choices.append(questionary.Choice(title=label, value=r))
-    choices.append(questionary.Choice(title="[Cancel]", value=None))
-
-    try:
-        return questionary.select("Select result to download:", choices=choices).ask()
-    except (KeyboardInterrupt, EOFError):
-        return None
+from tream.utils.picker import interactive_pick_result
 
 
 def run_download(
@@ -51,8 +39,7 @@ def run_download(
         status("no results found")
         return
 
-    status(f"found {len(results)} results")
-    chosen = _pick_search_result(results)
+    chosen = interactive_pick_result(query, results, page_size=10)
     if not chosen:
         return
 

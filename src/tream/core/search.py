@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import Any
 from tream.core.config import load_config
 from tream.providers.apibay import ApibayProvider
@@ -8,7 +9,7 @@ from tream.providers.torznab import TorznabProvider
 from tream.providers.x1337 import X1337Provider
 from tream.providers.yts import YTSProvider
 from tream.utils.fuzzy import fuzzy_filter, fuzzy_score
-from tream.utils.logging import get_logger, status
+from tream.utils.logging import get_logger
 
 PROVIDER_REGISTRY: dict[str, type[SearchProvider]] = {
     "yts": YTSProvider,
@@ -18,9 +19,46 @@ PROVIDER_REGISTRY: dict[str, type[SearchProvider]] = {
     "torznab": TorznabProvider,
 }
 
+_SEASON_RE = re.compile(
+    r"(?:\bseason\s*([0-9]{1,2})\b|\bs([0-9]{1,2})(?:e[0-9]{1,3}\b|\b)|\b([0-9]{1,2})(?:nd|rd|th|st)\s*season\b)",
+    re.IGNORECASE,
+)
+
+
+def _check_season_mismatch(query: str, title: str) -> bool:
+    """Check if query specifies a season number and candidate title specifies a different one."""
+    q_matches = _SEASON_RE.findall(query.lower())
+    if not q_matches:
+        return False
+
+    q_season = None
+    for m in q_matches:
+        num_str = m[0] or m[1] or m[2]
+        if num_str:
+            q_season = int(num_str)
+            break
+
+    if q_season is None:
+        return False
+
+    t_matches = _SEASON_RE.findall(title.lower())
+    if not t_matches:
+        return False
+
+    for m in t_matches:
+        num_str = m[0] or m[1] or m[2]
+        if num_str:
+            t_season = int(num_str)
+            # Allow multi-season batches like "Season 1 + 2" or "Season 1-3"
+            if "1 + 2" in title or "1-2" in title or "1 - 2" in title:
+                continue
+            if t_season != q_season:
+                return True
+
+    return False
+
 
 def create_provider(name: str, config: dict[str, Any]) -> SearchProvider | None:
-    """Instantiate a search provider by name using configuration settings."""
     cls = PROVIDER_REGISTRY.get(name.lower())
     if not cls:
         return None
@@ -37,7 +75,6 @@ def create_provider(name: str, config: dict[str, Any]) -> SearchProvider | None:
 
 
 def get_enabled_providers(config: dict[str, Any] | None = None) -> list[SearchProvider]:
-    """Retrieve all enabled SearchProvider instances based on config."""
     cfg = config or load_config()
     provider_names = cfg.get("search", {}).get("providers", ["yts", "apibay", "nyaa"])
 
@@ -47,7 +84,6 @@ def get_enabled_providers(config: dict[str, Any] | None = None) -> list[SearchPr
         if prov:
             providers.append(prov)
 
-    # Also automatically include Torznab if URL configured and not in list
     if "torznab" not in [p.lower() for p in provider_names]:
         if cfg.get("torznab", {}).get("url"):
             prov = create_provider("torznab", cfg)
@@ -58,7 +94,7 @@ def get_enabled_providers(config: dict[str, Any] | None = None) -> list[SearchPr
 
 
 async def search_all(query: str, config: dict[str, Any] | None = None) -> list[SearchResult]:
-    """Search enabled providers concurrently, deduplicate by infohash, and sort."""
+    """Search enabled providers concurrently, filter dead torrents, deduplicate, and rank."""
     cfg = config or load_config()
     providers = get_enabled_providers(cfg)
     logger = get_logger()
@@ -95,28 +131,24 @@ async def search_all(query: str, config: dict[str, Any] | None = None) -> list[S
 
     merged = list(deduped.values())
 
-    # Fuzzy matching fallback if fuzzy enabled and exact matches are sparse
+    # 1. Filter out dead torrents (0 seeders) if active ones exist
+    active_torrents = [r for r in merged if r.seeders > 0]
+    if active_torrents:
+        merged = active_torrents
+
+    # 2. Relevance and season mismatch checks
     use_fuzzy = cfg.get("search", {}).get("fuzzy", True)
-    q_lower = query.lower().strip()
 
-    if use_fuzzy:
-        # Check if there is an exact match in the titles
-        has_direct_match = any(q_lower in r.title.lower() for r in merged)
-        if not has_direct_match:
-            scored = fuzzy_filter(query, merged, key=lambda r: r.title, score_cutoff=40.0)
-            if scored:
-                # Reorder based on combined fuzzy score and seeder count
-                merged = [
-                    pair[0]
-                    for pair in sorted(
-                        scored,
-                        key=lambda pair: (pair[1], pair[0].seeders),
-                        reverse=True,
-                    )
-                ]
+    def sort_key(r: SearchResult) -> tuple[int, int, float]:
+        mismatched_season = 1 if _check_season_mismatch(query, r.title) else 0
+        f_score = fuzzy_score(query, r.title) if use_fuzzy else 50.0
+        # Priority:
+        # Tier 0: Matching season/movie (mismatched == 0)
+        # Tier 1: Highest seeders
+        # Tier 2: Fuzzy title score
+        return (-mismatched_season, r.seeders, f_score)
 
-    # Sort primarily by seeders descending
-    merged.sort(key=lambda r: r.seeders, reverse=True)
+    merged.sort(key=sort_key, reverse=True)
 
-    max_results = cfg.get("search", {}).get("max_results", 20)
+    max_results = cfg.get("search", {}).get("max_results", 40)
     return merged[:max_results]

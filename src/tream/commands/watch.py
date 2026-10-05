@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 import sys
 from typing import Any
@@ -23,20 +24,8 @@ from tream.core.torrserver import (
 from tream.providers.base import SearchResult
 from tream.utils.cache import parse_buffer_size
 from tream.utils.logging import get_logger, spinner, status
+from tream.utils.picker import interactive_pick_result
 from tream.utils.subtitles import fetch_subtitles
-
-
-def _pick_search_result(results: list[SearchResult]) -> SearchResult | None:
-    choices: list[questionary.Choice] = []
-    for r in results:
-        label = f"[{r.provider}] {r.title} | {r.formatted_size} | S:{r.seeders} L:{r.leechers} [{r.quality}]"
-        choices.append(questionary.Choice(title=label, value=r))
-    choices.append(questionary.Choice(title="[Cancel]", value=None))
-
-    try:
-        return questionary.select("Select result to stream:", choices=choices).ask()
-    except (KeyboardInterrupt, EOFError):
-        return None
 
 
 def _find_primary_file(files: list[dict[str, Any]]) -> dict[str, Any]:
@@ -59,8 +48,9 @@ def watch_stream(
     is_series: bool = False,
     buffer_override: str | None = None,
     player_override: str | None = None,
+    verbose: bool = False,
 ) -> None:
-    """Core flow: search, interactive picker, TorrServer buffer setup, and playback."""
+    """Core flow: search, clean ani-cli paginated picker, TorrServer buffer setup, and playback."""
     cfg = load_config()
 
     status("searching indexes...")
@@ -70,8 +60,8 @@ def watch_stream(
         status("no results found")
         return
 
-    status(f"found {len(results)} results")
-    chosen = _pick_search_result(results)
+    # Use the clean, paginated, resolution-filterable ani-cli style picker
+    chosen = interactive_pick_result(query, results, page_size=10)
     if not chosen:
         return
 
@@ -82,6 +72,7 @@ def watch_stream(
         is_series=is_series,
         buffer_override=buffer_override,
         player_override=player_override,
+        verbose=verbose,
     )
 
 
@@ -95,11 +86,11 @@ def _stream_torrent(
     resume_seconds: float = 0.0,
     forced_season: int | None = None,
     forced_episode: int | None = None,
+    verbose: bool = False,
 ) -> None:
     cfg = load_config()
     logger = get_logger()
 
-    # Determine player and buffer
     try:
         player_binary = detect_player(player_override or cfg.get("general", {}).get("player"))
     except FileNotFoundError as err:
@@ -168,7 +159,6 @@ def _stream_torrent(
 
             episodes = seasons[chosen_season]
 
-            # Check if there is existing resume state
             resume_state = get_resume_position(infohash)
             start_pos = resume_seconds
 
@@ -209,14 +199,13 @@ def _stream_torrent(
             sub_file = fetch_subtitles(selected_ep.title, config=cfg)
 
             status("buffering...")
-            status("launching player...")
-
             runner = PlayerRunner(
                 player_binary=player_binary,
                 buffer_bytes=buf_bytes,
                 title=f"{title} - {selected_ep.display_name}",
                 resume_seconds=start_pos,
                 subtitle_file=sub_file,
+                verbose=verbose,
             )
 
             final_pos = runner.play(str(playlist_path), is_playlist=True)
@@ -253,14 +242,13 @@ def _stream_torrent(
     sub_file = fetch_subtitles(title, config=cfg)
 
     status("buffering...")
-    status("launching player...")
-
     runner = PlayerRunner(
         player_binary=player_binary,
         buffer_bytes=buf_bytes,
         title=title,
         resume_seconds=resume_seconds,
         subtitle_file=sub_file,
+        verbose=verbose,
     )
 
     final_pos = runner.play(stream_url, is_playlist=False)
@@ -281,6 +269,7 @@ def resume_from_history(
     entry: dict[str, Any],
     buffer_override: str | None = None,
     player_override: str | None = None,
+    verbose: bool = False,
 ) -> None:
     """Re-stream an item selected from watch history."""
     magnet = entry.get("magnet", "")
@@ -301,4 +290,5 @@ def resume_from_history(
         resume_seconds=pos,
         forced_season=season,
         forced_episode=episode,
+        verbose=verbose,
     )
