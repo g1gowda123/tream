@@ -1,0 +1,27 @@
+[general]
+player = "mpv"
+torrserver_port = 8090
+torrserver_binary = "torrserver"
+
+[playback]
+buffer = "256M"
+preload_cache = 30
+connections_limit = 800
+enable_dht = true
+
+[search]
+providers = ["yts", "apibay", "nyaa"]
+max_results = 20
+fuzzy = true
+
+[subtitles]
+enabled = false
+languages = ["en"]
+
+[series]
+auto_group = true
+resume = true
+
+[torznab]
+url = ""
+api_key = ""

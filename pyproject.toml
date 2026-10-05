@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tream"
+version = "0.1.0"
+description = "Fast, frictionless torrent streaming and download CLI tool"
+readme = "README.md"
+authors = [{ name = "g1gowda123" }]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "httpx>=0.27.0",
+    "questionary>=2.0.0",
+    "rapidfuzz>=3.0.0",
+    "platformdirs>=4.0.0",
+    "tomli-w>=1.0.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.optional-dependencies]
+subtitles = [
+    "subliminal>=2.1.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+tream = "tream.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tream = ["templates/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
