@@ -14,7 +14,10 @@ You need **MPV** (or **VLC**) and **TorrServer** on your system.
 
 - **Arch Linux / CachyOS**:
   ```bash
-  sudo pacman -S mpv torrserver
+  sudo pacman -S mpv
+  # TorrServer is in the AUR (torrserver-bin):
+  paru -S torrserver-bin
+  # (or: yay -S torrserver-bin)
   ```
 - **Ubuntu / Debian**:
   ```bash
