@@ -5,14 +5,16 @@ torrserver_binary = "torrserver"
 
 [playback]
 buffer = "256M"
-preload_cache = 30
+preload_cache = 10
 connections_limit = 800
 enable_dht = true
+prewarm = true
 
 [search]
 providers = ["yts", "apibay", "nyaa"]
 max_results = 20
 fuzzy = true
+min_seeders = 0
 
 [subtitles]
 enabled = false

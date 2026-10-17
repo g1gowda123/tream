@@ -4,12 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tream"
-version = "0.1.0"
+version = "1.0.0"
 description = "Fast, frictionless torrent streaming and download CLI tool"
 readme = "README.md"
 authors = [{ name = "g1gowda123" }]
 license = { text = "MIT" }
 requires-python = ">=3.11"
+keywords = ["torrent", "streaming", "cli", "mpv", "torrserver", "magnet"]
+classifiers = [
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Utilities",
+]
 dependencies = [
     "typer>=0.12.0",
     "rich>=13.0.0",
@@ -20,6 +31,11 @@ dependencies = [
     "tomli-w>=1.0.0",
     "beautifulsoup4>=4.12.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/g1gowda123/tream"
+Repository = "https://github.com/g1gowda123/tream"
+Issues = "https://github.com/g1gowda123/tream/issues"
 
 [project.optional-dependencies]
 subtitles = [

@@ -153,18 +153,21 @@ def spawn_torrserver(port: int = 8090, binary_path: Path | None = None) -> None:
     raise TimeoutError(f"TorrServer failed to respond on port {port} within 10 seconds")
 
 
-def stop_torrserver() -> None:
-    """Terminate the spawned TorrServer subprocess if tream started it."""
+def stop_torrserver() -> bool:
+    """Terminate the spawned TorrServer subprocess if tream started it.
+
+    Returns True when a process was actually terminated.
+    """
     global _torrserver_proc, _spawned_by_tream
     if not _spawned_by_tream or not _torrserver_proc:
-        return
+        return False
 
     proc = _torrserver_proc
     _torrserver_proc = None
     _spawned_by_tream = False
 
     if proc.poll() is not None:
-        return
+        return False
 
     try:
         if sys.platform == "win32":
@@ -187,6 +190,8 @@ def stop_torrserver() -> None:
     except Exception:
         pass
 
+    return True
+
 
 class TorrServerClient:
     """Client for interacting with TorrServer REST API."""
@@ -199,7 +204,7 @@ class TorrServerClient:
     def configure_settings(
         self,
         buffer_bytes: int,
-        preload_cache: int = 30,
+        preload_cache: int = 10,
         connections_limit: int = 800,
         enable_dht: bool = True,
         reader_read_ahead: int = 95,
@@ -266,9 +271,14 @@ class TorrServerClient:
             pass
 
     def wait_for_files(self, infohash: str, timeout: float = 35.0) -> list[dict[str, Any]]:
-        """Poll TorrServer until torrent metadata is loaded and file list is available."""
+        """Poll TorrServer until torrent metadata is loaded and file list is available.
+
+        Checks immediately and starts with short intervals (0.15s) so metadata
+        shows up as soon as TorrServer has it, backing off to 1s per poll.
+        """
         start_time = time.monotonic()
-        while time.monotonic() - start_time < timeout:
+        delay = 0.15
+        while True:
             try:
                 info = self.get_torrent(infohash)
                 files = info.get("file_stats", [])
@@ -276,7 +286,10 @@ class TorrServerClient:
                     return files
             except Exception:
                 pass
-            time.sleep(1.0)
+            if time.monotonic() - start_time >= timeout:
+                break
+            time.sleep(delay)
+            delay = min(delay * 1.6, 1.0)
 
         raise TimeoutError("Timed out waiting for torrent metadata and file list")
 

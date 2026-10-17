@@ -1,10 +1,11 @@
 from datetime import datetime
 import json
-from pathlib import Path
+import sys
 from typing import Any
 import questionary
+from rich.table import Table
 from tream.core.config import get_history_path
-from tream.utils.logging import status
+from tream.utils.logging import get_console, status
 
 MAX_HISTORY_ENTRIES = 200
 
@@ -74,33 +75,74 @@ def add_history_entry(
         pass
 
 
+def clear_history() -> int:
+    """Delete all watch history entries. Returns the number of removed entries."""
+    history = load_history()
+    path = get_history_path()
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError as err:
+        status(f"failed to clear history: {err}")
+        return -1
+    if history:
+        status(f"cleared {len(history)} history entr{'y' if len(history) == 1 else 'ies'}")
+    else:
+        status("history is already empty")
+    return len(history)
+
+
+def _entry_label(item: dict[str, Any]) -> str:
+    title = item.get("title", "Unknown")
+    label = title
+    if item.get("is_series", False):
+        label += f" [S{item.get('season', 1):02d}E{item.get('episode', 1):02d}]"
+    label += f" | {format_seconds(float(item.get('position', 0.0)))} | {item.get('timestamp', '')}"
+    return label
+
+
+def print_history_table(history: list[dict[str, Any]]) -> None:
+    """Print watch history as a table for non-interactive usage."""
+    console = get_console()
+    table = Table(title="tream :: watch history", title_style="bold cyan", header_style="bold")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Title", overflow="fold", max_width=70)
+    table.add_column("Progress", justify="right")
+    table.add_column("Watched", style="dim")
+
+    for i, item in enumerate(history, start=1):
+        label = item.get("title", "Unknown")
+        if item.get("is_series", False):
+            label += f" [S{item.get('season', 1):02d}E{item.get('episode', 1):02d}]"
+        table.add_row(
+            str(i),
+            label,
+            format_seconds(float(item.get("position", 0.0))),
+            item.get("timestamp", ""),
+        )
+    console.print(table)
+
+
 def run_history(
     buffer_override: str | None = None,
     player_override: str | None = None,
     verbose: bool = False,
-) -> None:
-    """Present watch history picker and re-stream selected item."""
+    once: bool = False,
+) -> int:
+    """Present watch history picker and re-stream selected item. Returns an exit code."""
     history = load_history()
     if not history:
         status("no watch history found")
-        return
+        return 0
 
-    choices: list[questionary.Choice] = []
-    for item in history:
-        title = item.get("title", "Unknown")
-        pos = item.get("position", 0.0)
-        time_str = item.get("timestamp", "")
-        is_series = item.get("is_series", False)
+    if not sys.stdin.isatty():
+        print_history_table(history)
+        status("no interactive terminal; run in a terminal to resume an entry")
+        return 0
 
-        label = f"{title}"
-        if is_series:
-            s = item.get("season", 1)
-            e = item.get("episode", 1)
-            label += f" [S{s:02d}E{e:02d}]"
-
-        label += f" | {format_seconds(pos)} | {time_str}"
-        choices.append(questionary.Choice(title=label, value=item))
-
+    choices: list[questionary.Choice] = [
+        questionary.Choice(title=_entry_label(item), value=item) for item in history
+    ]
     choices.append(questionary.Choice(title="[Cancel]", value=None))
 
     try:
@@ -110,15 +152,17 @@ def run_history(
             use_indicator=True,
         ).ask()
     except (KeyboardInterrupt, EOFError):
-        return
+        return 0
 
     if not selected:
-        return
+        return 0
 
     from tream.commands.watch import resume_from_history
-    resume_from_history(
+
+    return resume_from_history(
         selected,
         buffer_override=buffer_override,
         player_override=player_override,
         verbose=verbose,
+        once=once,
     )

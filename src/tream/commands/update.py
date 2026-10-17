@@ -4,6 +4,8 @@ import sys
 import tream
 from tream.utils.logging import status
 
+_GIT_URL = "git+https://github.com/g1gowda123/tream.git"
+
 
 def _detect_git_repo() -> Path | None:
     """Traverse parent directories to check if source lives in a git repository."""
@@ -17,8 +19,8 @@ def _detect_git_repo() -> Path | None:
     return None
 
 
-def run_update() -> None:
-    """Detect install method (git, pipx, pip) and perform self-update."""
+def run_update() -> int:
+    """Detect install method (git, pipx, pip) and perform self-update. Returns an exit code."""
     current_version = getattr(tream, "__version__", "0.1.0")
     status(f"current version: {current_version}")
 
@@ -40,27 +42,27 @@ def run_update() -> None:
 
         if res.returncode != 0:
             status(f"git pull failed: {res.stderr.strip()}")
-            return
+            return 1
 
         status("reinstalling in editable mode...")
         pip_cmd = [sys.executable, "-m", "pip", "install", "-e", "."]
         res = subprocess.run(pip_cmd, cwd=git_root, capture_output=True, text=True)
         if res.returncode != 0:
             status(f"pip install failed: {res.stderr.strip()}")
-            return
+            return 1
     elif "pipx" in sys.prefix or "pipx" in sys.executable:
         status("pipx installation detected, upgrading tream...")
         res = subprocess.run(["pipx", "upgrade", "tream"], capture_output=True, text=True)
         if res.returncode != 0:
             status(f"pipx upgrade failed: {res.stderr.strip()}")
-            return
+            return 1
     else:
         status("pip installation detected, upgrading package...")
-        pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "tream-cli"]
+        pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", _GIT_URL]
         res = subprocess.run(pip_cmd, capture_output=True, text=True)
         if res.returncode != 0:
             status(f"pip upgrade failed: {res.stderr.strip()}")
-            return
+            return 1
 
     # Check updated version if available
     try:
@@ -70,3 +72,4 @@ def run_update() -> None:
         new_version = current_version
 
     status(f"updated version: {new_version}")
+    return 0

@@ -8,7 +8,7 @@ from tream.providers.nyaa import NyaaProvider
 from tream.providers.torznab import TorznabProvider
 from tream.providers.x1337 import X1337Provider
 from tream.providers.yts import YTSProvider
-from tream.utils.fuzzy import fuzzy_filter, fuzzy_score
+from tream.utils.fuzzy import fuzzy_score
 from tream.utils.logging import get_logger
 
 PROVIDER_REGISTRY: dict[str, type[SearchProvider]] = {
@@ -18,6 +18,8 @@ PROVIDER_REGISTRY: dict[str, type[SearchProvider]] = {
     "nyaa": NyaaProvider,
     "torznab": TorznabProvider,
 }
+
+PROVIDER_NAMES: list[str] = sorted(PROVIDER_REGISTRY.keys())
 
 _SEASON_RE = re.compile(
     r"(?:\bseason\s*([0-9]{1,2})\b|\bs([0-9]{1,2})(?:e[0-9]{1,3}\b|\b)|\b([0-9]{1,2})(?:nd|rd|th|st)\s*season\b)",
@@ -74,9 +76,15 @@ def create_provider(name: str, config: dict[str, Any]) -> SearchProvider | None:
     return cls()
 
 
-def get_enabled_providers(config: dict[str, Any] | None = None) -> list[SearchProvider]:
+def get_enabled_providers(
+    config: dict[str, Any] | None = None,
+    providers_override: list[str] | None = None,
+) -> list[SearchProvider]:
     cfg = config or load_config()
-    provider_names = cfg.get("search", {}).get("providers", ["yts", "apibay", "nyaa"])
+    if providers_override:
+        provider_names = providers_override
+    else:
+        provider_names = cfg.get("search", {}).get("providers", ["yts", "apibay", "nyaa"])
 
     providers: list[SearchProvider] = []
     for name in provider_names:
@@ -84,7 +92,7 @@ def get_enabled_providers(config: dict[str, Any] | None = None) -> list[SearchPr
         if prov:
             providers.append(prov)
 
-    if "torznab" not in [p.lower() for p in provider_names]:
+    if not providers_override and "torznab" not in [p.lower() for p in provider_names]:
         if cfg.get("torznab", {}).get("url"):
             prov = create_provider("torznab", cfg)
             if prov:
@@ -93,10 +101,20 @@ def get_enabled_providers(config: dict[str, Any] | None = None) -> list[SearchPr
     return providers
 
 
-async def search_all(query: str, config: dict[str, Any] | None = None) -> list[SearchResult]:
+def unknown_provider_names(names: list[str]) -> list[str]:
+    """Return the subset of provider names that are not registered."""
+    return [n for n in names if n.lower() not in PROVIDER_REGISTRY]
+
+
+async def search_all(
+    query: str,
+    config: dict[str, Any] | None = None,
+    providers_override: list[str] | None = None,
+    min_seeders: int | None = None,
+) -> list[SearchResult]:
     """Search enabled providers concurrently, filter dead torrents, deduplicate, and rank."""
     cfg = config or load_config()
-    providers = get_enabled_providers(cfg)
+    providers = get_enabled_providers(cfg, providers_override=providers_override)
     logger = get_logger()
 
     if not providers:
@@ -136,7 +154,16 @@ async def search_all(query: str, config: dict[str, Any] | None = None) -> list[S
     if active_torrents:
         merged = active_torrents
 
-    # 2. Relevance and season mismatch checks
+    # 2. Optional minimum seeders threshold (CLI override or config)
+    raw_threshold = min_seeders if min_seeders is not None else cfg.get("search", {}).get("min_seeders", 0)
+    try:
+        threshold = int(raw_threshold or 0)
+    except (TypeError, ValueError):
+        threshold = 0
+    if threshold > 0:
+        merged = [r for r in merged if r.seeders >= threshold]
+
+    # 3. Relevance and season mismatch checks
     use_fuzzy = cfg.get("search", {}).get("fuzzy", True)
 
     def sort_key(r: SearchResult) -> tuple[int, int, float]:

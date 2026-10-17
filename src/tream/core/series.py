@@ -158,6 +158,25 @@ def group_and_sort_episodes(file_stats: list[dict[str, Any]]) -> dict[int, list[
     return seasons
 
 
+def find_episode(
+    seasons: dict[int, list[EpisodeInfo]],
+    season: int | None,
+    episode: int,
+) -> EpisodeInfo | None:
+    """Locate an episode by number, optionally restricted to a specific season."""
+    if season is not None:
+        for ep in seasons.get(season, []):
+            if ep.episode == episode:
+                return ep
+        return None
+
+    for season_num in sorted(seasons):
+        for ep in seasons[season_num]:
+            if ep.episode == episode:
+                return ep
+    return None
+
+
 def build_season_playlist(
     episodes: list[EpisodeInfo],
     start_index: int,

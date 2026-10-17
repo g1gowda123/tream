@@ -70,7 +70,27 @@ class MPVIPCClient:
 
     def get_time_pos(self) -> float | None:
         """Query MPV for current playback position in seconds."""
-        cmd = json.dumps({"command": ["get_property", "time-pos"]}) + "\n"
+        value = self._get_property("time-pos")
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def get_playlist_pos(self) -> int | None:
+        """Query MPV for the index of the playlist entry being played."""
+        value = self._get_property("playlist-pos")
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_property(self, name: str) -> Any:
+        """Query MPV for a property value; returns raw data or None."""
+        cmd = json.dumps({"command": ["get_property", name]}) + "\n"
 
         if sys.platform == "win32":
             try:
@@ -79,7 +99,7 @@ class MPVIPCClient:
                     line = pipe.readline().decode("utf-8")
                     data = json.loads(line)
                     if data.get("error") == "success" and data.get("data") is not None:
-                        return float(data["data"])
+                        return data["data"]
             except Exception:
                 return None
         else:
@@ -99,7 +119,7 @@ class MPVIPCClient:
                     try:
                         data = json.loads(line)
                         if data.get("error") == "success" and data.get("data") is not None:
-                            return float(data["data"])
+                            return data["data"]
                     except Exception:
                         pass
             except Exception:
@@ -128,6 +148,7 @@ class PlayerRunner:
         self.subtitle_file = subtitle_file
         self.verbose = verbose
         self.last_position = self.resume_seconds
+        self.last_playlist_pos: int | None = None
         self.logger = get_logger()
 
     def play(self, stream_url: str, is_playlist: bool = False) -> float:
@@ -225,6 +246,7 @@ class PlayerRunner:
             final_pos = ipc_client.get_time_pos()
             if final_pos is not None and final_pos > 0:
                 self.last_position = final_pos
+            self.last_playlist_pos = ipc_client.get_playlist_pos()
             ipc_client.close()
 
             if sys.platform != "win32":

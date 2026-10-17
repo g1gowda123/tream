@@ -58,13 +58,15 @@ def get_default_config_content() -> str:
             'torrserver_binary = "torrserver"\n\n'
             "[playback]\n"
             'buffer = "256M"\n'
-            "preload_cache = 30\n"
+            "preload_cache = 10\n"
             "connections_limit = 800\n"
-            "enable_dht = true\n\n"
+            "enable_dht = true\n"
+            "prewarm = true\n\n"
             "[search]\n"
             'providers = ["yts", "apibay", "nyaa"]\n'
             "max_results = 20\n"
-            "fuzzy = true\n\n"
+            "fuzzy = true\n"
+            "min_seeders = 0\n\n"
             "[subtitles]\n"
             "enabled = false\n"
             'languages = ["en"]\n\n'

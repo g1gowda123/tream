@@ -26,6 +26,16 @@ class MagnetInfo:
     raw_uri: str = ""
 
 
+def looks_like_torrent_ref(text: str) -> bool:
+    """Return True if text is a magnet URI, raw 40-char hex hash, or 32-char base32 hash."""
+    clean = text.strip()
+    if not clean:
+        return False
+    if clean.startswith("magnet:?"):
+        return True
+    return bool(_HEX_40_RE.match(clean) or _B32_32_RE.match(clean))
+
+
 def normalize_infohash(hash_val: str) -> str:
     """Normalize 40-char hex or 32-char base32 infohash to lowercase 40-char hex."""
     clean = hash_val.strip()
