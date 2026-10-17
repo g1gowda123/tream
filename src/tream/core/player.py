@@ -40,6 +40,26 @@ def detect_player(preference: str | None = None) -> str:
     )
 
 
+# Keys accepted in the terminal while playback is running (mirrored to MPV via IPC).
+_KEY_COMMANDS: dict[str, list[str]] = {
+    "n": ["playlist-next", "force"],
+    "p": ["playlist-prev", "force"],
+    "q": ["quit"],
+    " ": ["cycle", "pause"],
+    "\x1b[C": ["seek", "5"],      # right arrow
+    "\x1b[D": ["seek", "-5"],     # left arrow
+    "\x1b[A": ["seek", "60"],     # up arrow
+    "\x1b[B": ["seek", "-60"],    # down arrow
+}
+
+
+def terminal_key_command(key: str) -> list[str] | None:
+    """Map a terminal keypress to an MPV IPC command (None when ignored)."""
+    if len(key) == 1:
+        key = key.lower()
+    return _KEY_COMMANDS.get(key)
+
+
 class MPVIPCClient:
     """Persistent JSON IPC client for MPV across Unix domain sockets and Windows named pipes."""
 
@@ -128,6 +148,118 @@ class MPVIPCClient:
 
         return None
 
+    def send_command(self, *args: str) -> bool:
+        """Send a command to MPV over IPC without waiting for the reply."""
+        cmd = json.dumps({"command": list(args)}) + "\n"
+
+        if sys.platform == "win32":
+            try:
+                with open(self.ipc_path, "r+b", buffering=0) as pipe:
+                    pipe.write(cmd.encode("utf-8"))
+                    return True
+            except Exception:
+                return False
+
+        if not self._sock and not self.connect():
+            return False
+        try:
+            assert self._sock is not None
+            self._sock.sendall(cmd.encode("utf-8"))
+            return True
+        except Exception:
+            self.close()
+            return False
+
+
+class _TerminalKeyListener(threading.Thread):
+    """Forward terminal keypresses to the running MPV process over IPC.
+
+    Lets the user press n (next episode), p (previous), q (quit), space
+    (pause) and arrow keys (seek) in the terminal while the player runs.
+    A dedicated IPC connection is used so position polling does not
+    interleave with control commands.
+    """
+
+    def __init__(self, ipc_path: str, stop_event: threading.Event) -> None:
+        super().__init__(daemon=True, name="tream-key-listener")
+        self.ipc_path = ipc_path
+        self.stop_event = stop_event
+        self.logger = get_logger()
+        self._ipc = MPVIPCClient(ipc_path)
+
+    def run(self) -> None:
+        try:
+            if sys.platform == "win32":
+                self._run_windows()
+            else:
+                self._run_unix()
+        except Exception as err:
+            self.logger.debug("Terminal key listener stopped: %s", err)
+        finally:
+            self._ipc.close()
+
+    def _run_unix(self) -> None:
+        import os
+        import select
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+
+        def _read_key() -> str:
+            try:
+                char = os.read(fd, 1)
+            except OSError:
+                return ""
+            key = char.decode("utf-8", errors="ignore")
+            if key != "\x1b":
+                return key
+            # Escape sequence (arrow keys): ESC [ A/B/C/D
+            for _ in range(2):
+                ready, _, _ = select.select([fd], [], [], 0.02)
+                if not ready:
+                    break
+                tail = os.read(fd, 1).decode("utf-8", errors="ignore")
+                key += tail
+                if tail.isalpha():
+                    break
+            return key
+
+        try:
+            tty.setcbreak(fd)
+            while not self.stop_event.is_set():
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if not ready:
+                    continue
+                key = _read_key()
+                if key:
+                    self._handle(key)
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass
+
+    def _run_windows(self) -> None:
+        import msvcrt
+
+        while not self.stop_event.is_set():
+            if msvcrt.kbhit():
+                key = msvcrt.getwch()
+                if key in ("\x00", "\xe0"):  # special-key prefix
+                    msvcrt.getwch()
+                    continue
+                self._handle(key)
+            else:
+                self.stop_event.wait(0.15)
+
+    def _handle(self, key: str) -> None:
+        command = terminal_key_command(key)
+        if command:
+            self.logger.debug("Terminal key %r -> mpv %s", key, " ".join(command))
+            self._ipc.send_command(*command)
+
 
 class PlayerRunner:
     """Manages spawning player process, buffer flags, IPC tracking, and resume."""
@@ -210,7 +342,10 @@ class PlayerRunner:
         # Show clean status to the user
         console = get_console()
         console.print(f"[bold green]Playing:[/bold green] {self.title or 'Stream'}")
-        console.print(f"[dim]Controls: [Space] Pause | [9/0] Volume | [Left/Right] Seek 5s | [q] Quit[/dim]\n")
+        if self.verbose:
+            console.print(
+                "[dim]Keys: n=next episode | p=previous | q=quit | space=pause | arrows=seek[/dim]"
+            )
 
         creation_kwargs: dict[str, Any] = {}
         if not self.verbose:
@@ -233,6 +368,12 @@ class PlayerRunner:
         poller = threading.Thread(target=_poll_position, daemon=True)
         poller.start()
 
+        # Live controls from the terminal: n=next, p=previous, q=quit, space=pause, arrows=seek
+        key_listener: _TerminalKeyListener | None = None
+        if sys.stdin.isatty():
+            key_listener = _TerminalKeyListener(ipc_target, stop_polling)
+            key_listener.start()
+
         try:
             proc.wait()
         except KeyboardInterrupt:
@@ -243,6 +384,8 @@ class PlayerRunner:
                 proc.kill()
         finally:
             stop_polling.set()
+            if key_listener is not None:
+                key_listener.join(timeout=0.5)
             final_pos = ipc_client.get_time_pos()
             if final_pos is not None and final_pos > 0:
                 self.last_position = final_pos
@@ -294,7 +437,6 @@ class PlayerRunner:
 
         console = get_console()
         console.print(f"[bold green]Playing:[/bold green] {self.title or 'Stream'}")
-        console.print(f"[dim]Controls: [Space] Pause | [q] Quit[/dim]\n")
 
         creation_kwargs: dict[str, Any] = {}
         if not self.verbose:

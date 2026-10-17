@@ -422,14 +422,15 @@ def _play_series_session(
 ) -> str:
     from tream.commands.history import add_history_entry
 
-    # Start fetching the first file while the user is still choosing an episode
-    _start_prewarm(client, infohash, seasons, cfg)
+    resume_state = get_resume_position(infohash)
+
+    # Start fetching the resume target (or first file) while the user is picking
+    _start_prewarm(client, infohash, seasons, cfg, resume_state)
 
     selected_ep = _select_episode(seasons, forced_season, forced_episode, infohash)
     if selected_ep is None:
         return ACTION_DONE
 
-    resume_state = get_resume_position(infohash)
     start_pos = resume_seconds
     if resume_state and resume_state.get("episode") == selected_ep.episode and start_pos == 0.0:
         start_pos = float(resume_state.get("timestamp", 0.0))
@@ -667,22 +668,46 @@ def _prompt_query_again(previous: str) -> str:
     return (answer or "").strip()
 
 
+def _pick_prewarm_episode(
+    seasons: dict[int, list[EpisodeInfo]],
+    resume_state: dict[str, Any] | None,
+) -> EpisodeInfo | None:
+    """Choose the episode worth preloading: the resume target, else the first."""
+    if resume_state:
+        try:
+            matched = find_episode(
+                seasons,
+                int(resume_state.get("season") or 0) or None,
+                int(resume_state.get("episode") or 0),
+            )
+        except (TypeError, ValueError):
+            matched = None
+        if matched is not None:
+            return matched
+
+    if not seasons:
+        return None
+    first_season = min(seasons)
+    episodes = seasons[first_season]
+    return episodes[0] if episodes else None
+
+
 def _start_prewarm(
     client: TorrServerClient,
     infohash: str,
     seasons: dict[int, list[EpisodeInfo]],
     cfg: dict[str, Any],
+    resume_state: dict[str, Any] | None = None,
 ) -> None:
-    """Begin fetching the first episode in the background while the user picks."""
+    """Begin fetching the resume target (or first episode) while the user picks."""
     if not cfg.get("playback", {}).get("prewarm", True):
         return
 
-    first_season = min(seasons)
-    episodes = seasons[first_season]
-    if not episodes:
+    target = _pick_prewarm_episode(seasons, resume_state)
+    if target is None:
         return
-    ep = episodes[0]
-    url = client.get_stream_url(infohash, file_id=ep.file_id, filename=Path(ep.path).name)
+
+    url = client.get_stream_url(infohash, file_id=target.file_id, filename=Path(target.path).name)
     threading.Thread(target=_prewarm_stream, args=(url,), daemon=True).start()
 
 

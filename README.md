@@ -117,7 +117,20 @@ When the player closes, tream does not exit — an interactive follow-up menu ap
 
 TorrServer keeps running between playbacks and the torrent stays loaded, so replaying, grabbing the next episode, or switching results starts almost immediately. Add `--once` to exit right after playback ends (handy for scripts).
 
-tream also trims time-to-first-frame: torrent metadata is polled immediately (no fixed startup sleep), the `playback.preload_cache` default is a low 10 seconds, and in series mode tream starts fetching the first episode in the background while you are still picking.
+**Live controls while playing** — no need to focus the mpv window; just type in the terminal:
+
+| Key | Action |
+| --- | --- |
+| `n` | Next episode |
+| `p` | Previous episode |
+| `q` | Quit playback (returns to the follow-up menu) |
+| `Space` | Pause / resume |
+| `←` / `→` | Seek ∓5s |
+| `↑` / `↓` | Seek ±60s |
+
+(These are forwarded to mpv over its IPC socket, so mpv's own keyboard shortcuts keep working when its window is focused.)
+
+tream also trims time-to-first-frame: torrent metadata is polled immediately (no fixed startup sleep), the `playback.preload_cache` default is a low 10 seconds, and in series mode tream starts fetching the episode you're likely to play (your resume point, or the first episode) while you are still picking.
 
 ### 4. Download Torrents (`-d`)
 Search, choose a result, and download files directly to a folder with a live progress bar showing transferred bytes, rate, and ETA:
@@ -348,7 +361,7 @@ Nothing is wrong with your setup—the chosen torrent simply has no reachable pe
 Just re-run the exact same download command. tream keeps partial files as `.part` and resumes with an HTTP Range request; files that already finished are skipped.
 
 ### 6. Playback takes a long time to start
-Time-to-first-frame is mostly peer speed, but you can nudge it:
+The pause between `Playing:` and the video is a mix of mpv start-up (your `mpv.conf`, shader profiles, window creation) and torrent warm-up (finding peers and fetching the first pieces). Resuming from a timestamp adds extra delay because the player must seek to a random offset, which needs index/data pieces from the middle of the file. You can nudge the torrent side:
 
 ```bash
 tream "query" --min-seeders 10          # avoid poorly-seeded torrents
@@ -356,7 +369,7 @@ tream config set playback.preload_cache 5  # start serving sooner (default 10s)
 tream config set playback.enable_dht true  # find more peers (default on)
 ```
 
-`playback.prewarm` (default `true`) already starts fetching the first episode while you pick in `-s` mode.
+`playback.prewarm` (default `true`) already starts fetching your resume point (or the first episode) while you pick in `-s` mode. If start-up stays slow with any player, check your mpv configuration (`mpv --no-config <url>` is a quick baseline) and prefer well-seeded releases.
 
 ---
 

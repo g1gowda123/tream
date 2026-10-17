@@ -681,6 +681,33 @@ def test_play_series_session_tracks_auto_advanced_episode(monkeypatch, tmp_path)
 
 
 # ---------------------------------------------------------------------------
+# Live terminal controls during playback
+# ---------------------------------------------------------------------------
+
+def test_terminal_key_command_mapping():
+    from tream.core.player import terminal_key_command
+
+    assert terminal_key_command("n") == ["playlist-next", "force"]
+    assert terminal_key_command("N") == ["playlist-next", "force"]
+    assert terminal_key_command("p") == ["playlist-prev", "force"]
+    assert terminal_key_command("q") == ["quit"]
+    assert terminal_key_command(" ") == ["cycle", "pause"]
+    assert terminal_key_command("\x1b[C") == ["seek", "5"]  # right arrow
+    assert terminal_key_command("\x1b[D") == ["seek", "-5"]  # left arrow
+    assert terminal_key_command("\x1b[A") == ["seek", "60"]  # up arrow
+    assert terminal_key_command("\x1b[B") == ["seek", "-60"]  # down arrow
+    assert terminal_key_command("x") is None
+    assert terminal_key_command("") is None
+
+
+def test_mpv_send_command_without_server_returns_false():
+    from tream.core.player import MPVIPCClient
+
+    client = MPVIPCClient("/tmp/tream-definitely-not-running.sock")
+    assert client.send_command("quit") is False
+
+
+# ---------------------------------------------------------------------------
 # Start-up latency helpers
 # ---------------------------------------------------------------------------
 
@@ -744,3 +771,23 @@ def test_select_episode_forced_values(monkeypatch):
     assert w._select_episode(seasons, None, 5, HASH_A) is ep2
     assert w._select_episode(seasons, 3, 1, HASH_A) is None
     assert w._select_episode(seasons, 1, None, HASH_A) is ep1  # single episode auto-selects
+
+
+def test_pick_prewarm_episode_prefers_resume_target():
+    from tream.commands import watch as w
+    from tream.core.series import EpisodeInfo
+
+    ep1 = EpisodeInfo(file_id=1, path="S01E01.mkv", season=1, episode=1, size=0, title="a")
+    ep2 = EpisodeInfo(file_id=2, path="S02E05.mkv", season=2, episode=5, size=0, title="b")
+    seasons = {1: [ep1], 2: [ep2]}
+
+    # No resume state -> first episode
+    assert w._pick_prewarm_episode(seasons, None) is ep1
+    assert w._pick_prewarm_episode(seasons, {}) is ep1
+    # Resume state matching an episode -> that episode
+    assert w._pick_prewarm_episode(seasons, {"season": 2, "episode": 5}) is ep2
+    # Resume state without season -> search all seasons
+    assert w._pick_prewarm_episode(seasons, {"episode": 5}) is ep2
+    # Unknown/garbage resume state -> fall back to first episode
+    assert w._pick_prewarm_episode(seasons, {"season": 9, "episode": 9}) is ep1
+    assert w._pick_prewarm_episode(seasons, {"season": "x", "episode": "y"}) is ep1
